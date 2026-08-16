@@ -1,5 +1,5 @@
 // author: tilaven
-// version: 0.1.3
+// version: 0.2.0
 //
 // Invite Assistant - compares a target list of players (your tribe, other
 // tribes, or a list posted on the tribe forum) with your friends screen and
@@ -18,7 +18,7 @@
 (function () {
     'use strict';
 
-    var VERSION = '0.1.3';
+    var VERSION = '0.2.0';
     var PANEL_ID = 'invite-assistant';
     var REQUEST_DELAY_MS = 350;     // the game's bot protection dislikes bursts
 
@@ -112,16 +112,21 @@
         return normalizeName(name).toLowerCase();
     }
 
-    function uniqueByName(players) {
+    function uniqueById(players) {
         var seen = {};
         return players.filter(function (player) {
-            var key = nameKey(player.name);
-            if (!key || seen[key]) {
+            if (seen[player.id]) {
                 return false;
             }
-            seen[key] = true;
+            seen[player.id] = true;
             return true;
         });
+    }
+
+    // the profile id is the identity wherever the game gives one; a name is
+    // only a stand-in for the rare player the world files have not seen yet
+    function playerKey(player) {
+        return player.id ? 'id:' + player.id : 'name:' + nameKey(player.name);
     }
 
     // ── where the player list comes from ──────────────────────────────────
@@ -262,13 +267,15 @@
         },
 
         // player links inside the given element; the screen menu links to your
-        // own profile without an id, which is exactly what we want to skip
+        // own profile without an id, which is exactly what we want to skip.
+        // The id is the identity here - the app wraps whole rows in the profile
+        // link, so the link text is worth nothing until the world files answer
         players: function (root) {
             var links = root.querySelectorAll(PROFILE_LINK);
-            return uniqueByName(Array.prototype.map.call(links, function (link) {
+            return uniqueById(Array.prototype.map.call(links, function (link) {
                 var href = link.getAttribute('href') || '';
                 var id = (href.match(/[?&]id=(\d+)/) || [])[1];
-                return id ? {name: normalizeName(link.textContent), profileUrl: href} : null;
+                return id ? {id: id, name: normalizeName(link.textContent), profileUrl: href} : null;
             }).filter(Boolean));
         },
 
@@ -279,38 +286,30 @@
             }).filter(Boolean);
         },
 
-        // ally.txt: id, name, tag, members, villages, points, all points, rank
-        allyTags: function (text) {
-            var tags = {};
-            String(text).split('\n').forEach(function (line) {
-                var cells = line.split(',');
-                if (cells.length > 2) {
-                    tags[nameKey(cells[2])] = cells[0];
-                }
-            });
-            return tags;
-        },
-
-        // player.txt: id, name, tribe id, villages, points, rank. The friends
-        // screen never says which tribe somebody is in, so the world data files
-        // fill that in - they are a day old at worst, fine for a label
-        playerTags: function (playerText, allyText) {
+        // player.txt: id, name, tribe id, villages, points, rank. The screens
+        // give ids reliably and names only sometimes, so the world files are
+        // what turns an id into a nickname and a tribe tag - a day old at worst
+        world: function (playerText, allyText) {
             var tagOf = {};
+            var world = {players: {}, tribes: {}};
+
             String(allyText).split('\n').forEach(function (line) {
                 var cells = line.split(',');
                 if (cells.length > 2) {
                     tagOf[cells[0]] = normalizeName(cells[2]);
+                    world.tribes[nameKey(cells[2])] = cells[0];
                 }
             });
-
-            var tribes = {};
             String(playerText).split('\n').forEach(function (line) {
                 var cells = line.split(',');
                 if (cells.length > 2) {
-                    tribes[nameKey(cells[1])] = tagOf[cells[2]] || '';
+                    world.players[cells[0]] = {
+                        name: normalizeName(cells[1]),
+                        tribe: tagOf[cells[2]] || ''
+                    };
                 }
             });
-            return tribes;
+            return world;
         },
 
         // one forum post if an anchor was configured, the whole thread otherwise
@@ -373,10 +372,11 @@
                 }
                 found.players++;
 
+                var href = profile.getAttribute('href');
+                var id = (href.match(/[?&]id=(\d+)/) || [])[1];
                 var row = Parse.rowOf(profile);
                 var actions = row ? Parse.actions(row) : {};
-                var name = normalizeName(profile.textContent);
-                if (seen[nameKey(name)]) {
+                if (seen[id]) {
                     return;
                 }
                 if (!row || !(actions.accept || actions.drop)) {
@@ -385,13 +385,16 @@
                     found.unreadable += actions.add ? 0 : 1;
                     return;
                 }
-                seen[nameKey(name)] = true;
+                seen[id] = true;
 
-                // only a stand-in until the world data files answer with a tag
+                // both are only stand-ins until the world files answer: the app
+                // wraps whole rows in the profile link, so the text can be the
+                // entire table instead of a nickname
                 var tribe = row.querySelector('a[href*="screen=info_ally"]');
                 found.rows.push({
-                    name: name,
-                    profileUrl: profile.getAttribute('href'),
+                    id: id,
+                    name: normalizeName(profile.textContent),
+                    profileUrl: href,
                     accept: actions.accept,
                     remove: actions.drop,
                     tribe: tribe ? normalizeName(tribe.textContent) : '',
@@ -434,6 +437,51 @@
         }
     };
 
+    // ── world data ────────────────────────────────────────────────────────
+
+    // player.txt and ally.txt answer what the screens do not: the nickname
+    // behind a profile id, the tribe somebody plays for, and the id behind a
+    // tribe tag. Kept for an hour, which is also as often as the game allows
+    // collecting them
+    var World = {
+        KEY: 'invite-assistant-world',
+        MAX_AGE_MS: 60 * 60 * 1000,
+        pending: null,
+
+        load: function () {
+            if (!World.pending) {
+                World.pending = World.stored() || World.download();
+            }
+            return World.pending;
+        },
+
+        stored: function () {
+            try {
+                var saved = JSON.parse(localStorage.getItem(World.KEY));
+                if (saved && Date.now() - saved.time < World.MAX_AGE_MS) {
+                    return Promise.resolve(saved.world);
+                }
+            } catch (e) {
+                // unreadable or switched off - just fetch it again
+            }
+            return null;
+        },
+
+        download: function () {
+            return Promise.all([Game.get('/map/player.txt'), Game.get('/map/ally.txt')])
+                .then(function (files) {
+                    var world = Parse.world(files[0], files[1]);
+                    try {
+                        localStorage.setItem(World.KEY,
+                            JSON.stringify({time: Date.now(), world: world}));
+                    } catch (e) {
+                        // no room for a whole world in storage, keep it for this run
+                    }
+                    return world;
+                });
+        }
+    };
+
     // ── target list ───────────────────────────────────────────────────────
 
     var Targets = {
@@ -472,7 +520,7 @@
                 if (tribeIds.length) {
                     return Targets.fromTribeIds(tribeIds).then(function (members) {
                         return {
-                            players: uniqueByName(members.concat(players)),
+                            players: uniqueById(members.concat(players)),
                             source: source,
                             sourceUrl: url
                         };
@@ -487,19 +535,6 @@
             });
         },
 
-        // name -> tribe tag for the whole world, fetched once and only when
-        // there is somebody to label with it
-        tribeOfPlayer: null,
-
-        tribes: function () {
-            if (!Targets.tribeOfPlayer) {
-                Targets.tribeOfPlayer = Promise
-                    .all([Game.get('/map/player.txt'), Game.get('/map/ally.txt')])
-                    .then(function (files) { return Parse.playerTags(files[0], files[1]); });
-            }
-            return Targets.tribeOfPlayer;
-        },
-
         // one tribe behind the list can be linked to, a handful cannot
         lastIds: [],
 
@@ -508,9 +543,8 @@
         },
 
         fromTags: function (tags) {
-            return Game.get('/map/ally.txt').then(function (text) {
-                var byTag = Parse.allyTags(text);
-                var ids = tags.map(function (tag) { return byTag[nameKey(tag)]; }).filter(Boolean);
+            return World.load().then(function (world) {
+                var ids = tags.map(function (tag) { return world.tribes[nameKey(tag)]; }).filter(Boolean);
                 Targets.lastIds = ids;
                 return Targets.fromTribeIds(ids);
             });
@@ -523,7 +557,7 @@
                 });
             });
             return Promise.all(pages).then(function (lists) {
-                return uniqueByName([].concat.apply([], lists));
+                return uniqueById([].concat.apply([], lists));
             });
         }
     };
@@ -538,44 +572,45 @@
     //           a request from somebody we are not looking for, where removing
     //           means declining it
 
-    function splitLists(targets, rows, ownName) {
+    function splitLists(targets, rows, own) {
         var onList = {};
         var waiting = {};
         rows.forEach(function (row) {
-            if (row.accept) {
-                waiting[nameKey(row.name)] = row;
-            } else {
-                onList[nameKey(row.name)] = row;
-            }
+            (row.accept ? waiting : onList)[playerKey(row)] = row;
         });
 
         var wanted = {};
-        var players = targets.filter(function (player) {
-            return nameKey(player.name) !== nameKey(ownName || '');
-        });
-        players.forEach(function (player) { wanted[nameKey(player.name)] = true; });
+        var players = targets.filter(function (player) { return !isSelf(player, own); });
+        players.forEach(function (player) { wanted[playerKey(player)] = true; });
 
         var incoming = players
-            .filter(function (player) { return waiting[nameKey(player.name)]; })
-            .map(function (player) { return entry(waiting[nameKey(player.name)], 'accept'); });
+            .filter(function (player) { return waiting[playerKey(player)]; })
+            .map(function (player) { return entry(waiting[playerKey(player)], 'accept'); });
 
         return {
             toInvite: incoming.concat(players
                 .filter(function (player) {
-                    return !onList[nameKey(player.name)] && !waiting[nameKey(player.name)];
+                    return !onList[playerKey(player)] && !waiting[playerKey(player)];
                 })
                 .map(function (player) { return entry(player, 'invite'); })),
             already: players
-                .filter(function (player) { return onList[nameKey(player.name)]; })
-                .map(function (player) { return entry(onList[nameKey(player.name)], 'listed'); }),
+                .filter(function (player) { return onList[playerKey(player)]; })
+                .map(function (player) { return entry(onList[playerKey(player)], 'listed'); }),
             outsiders: rows
-                .filter(function (row) { return !wanted[nameKey(row.name)] && row.remove; })
+                .filter(function (row) { return !wanted[playerKey(row)] && row.remove; })
                 .map(function (row) { return entry(row, 'remove'); })
         };
     }
 
+    function isSelf(player, own) {
+        own = own || {};
+        return (own.id && String(own.id) === String(player.id)) ||
+            (!!own.name && nameKey(own.name) === nameKey(player.name));
+    }
+
     function entry(source, kind) {
         return {
+            id: source.id || null,
             name: source.name,
             profileUrl: source.profileUrl || null,
             accept: source.accept || null,
@@ -850,8 +885,18 @@
         row: function (item, drop) {
             var mark = el('span', {class: 'ia-mark'});
             var tribe = el('span', {class: 'ia-note', text: item.tribe});
+            var name = item.profileUrl
+                ? el('a', {text: item.name, href: item.profileUrl, target: '_blank'})
+                : el('span', {class: 'ia-name', text: item.name});
+
             item.setTribe = function (tag) {
                 tribe.textContent = tag || '';
+            };
+            // the app hands us a row of table text instead of a nickname, so
+            // the world files get to correct both the label and what we invite
+            item.setName = function (nick) {
+                item.name = nick;
+                name.textContent = nick;
             };
 
             item.setStatus = function (state, title) {
@@ -870,9 +915,7 @@
             };
 
             var node = el('div', {class: 'ia-row'}, [
-                item.profileUrl
-                    ? el('a', {text: item.name, href: item.profileUrl, target: '_blank'})
-                    : el('span', {class: 'ia-name', text: item.name}),
+                name,
                 tribe,
                 item.note ? el('span', {class: 'ia-note', text: item.note}) : null,
                 mark,
@@ -912,9 +955,10 @@
 
         refresh: function () {
             return Game.document(Game.url('buddies')).then(function (doc) {
-                var own = window.game_data && game_data.player.name;
+                var me = window.game_data && game_data.player;
                 var friends = Parse.scan(doc);
-                var lists = splitLists(App.targets.players, friends.rows, own);
+                var lists = splitLists(App.targets.players, friends.rows,
+                    me && {id: me.id, name: me.name});
                 var count = lists.toInvite.length + lists.already.length;
                 UI.render(lists);
                 if (friends.unread) {
@@ -925,31 +969,28 @@
                 } else {
                     UI.setStatus(t('noTargets'));
                 }
-                // every row that came off the friends screen carries whatever
-                // tribe text the game printed there, so they all get relabelled
-                return App.labelTribes(lists.already.concat(
-                    lists.outsiders,
-                    lists.toInvite.filter(function (item) { return item.kind === 'accept'; })
-                ));
+                return App.label(lists.toInvite.concat(lists.already, lists.outsiders));
             });
         },
 
-        // which tribe somebody plays for is the interesting bit when deciding
-        // whether to drop them. The world data files label all of them, so
-        // every row reads the same way: the screen prints a full tribe name in
-        // the rows that have that column and nothing in the rest, while the
-        // files always give the tag
-        labelTribes: function (entries) {
+        // the screens give ids reliably and everything else unevenly: a full
+        // tribe name in the tables that have that column, nothing in the rest,
+        // and in the app a whole row of table text where a nickname belongs.
+        // The world files settle all of it, so every row reads the same way
+        label: function (entries) {
             if (!entries.length) {
                 return Promise.resolve();
             }
-            return Targets.tribes().then(function (tribes) {
+            return World.load().then(function (world) {
                 entries.forEach(function (item) {
-                    var tag = tribes[nameKey(item.name)];
-                    item.setTribe(tag === undefined ? item.tribe : tag);
+                    var known = world.players[item.id];
+                    if (known) {
+                        item.setTribe(known.tribe);
+                        item.setName(known.name);
+                    }
                 });
             }).catch(function () {
-                // no world data files on this server - keep whatever the row said
+                // no world data files on this server - keep what the screen said
             });
         }
     };
@@ -961,8 +1002,7 @@
             parseSource: parseSource,
             splitLists: splitLists,
             normalizeName: normalizeName,
-            allyTags: Parse.allyTags,
-            playerTags: Parse.playerTags
+            world: Parse.world
         };
     } else {
         App.start();

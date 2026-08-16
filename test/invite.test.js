@@ -5,7 +5,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const {readConfig, parseSource, splitLists, normalizeName, allyTags, playerTags} = require('../script.js');
+const {readConfig, parseSource, splitLists, normalizeName, world} = require('../script.js');
 
 test('the script link becomes the text of the source field', () => {
     assert.equal(readConfig('https://x/script.js?tribes=SNTX,G-F'), 'SNTX,G-F');
@@ -41,68 +41,89 @@ test('names from the world data files are decoded', () => {
     assert.equal(normalizeName('50%+off'), '50% off');   // stray % stays as typed
 });
 
-test('ally.txt maps a tag to its tribe id', () => {
-    const tags = allyTags('2,Syntax+Sentinels,SNTX,6,1902,1,1,1\n44,Gone+Fishing,G-F,1,2,3,4,5');
-    assert.equal(tags['sntx'], '2');
-    assert.equal(tags['g-f'], '44');
-});
-
-test('the world data files say which tribe a player is in', () => {
-    const tribes = playerTags(
+test('the world files answer nickname, tribe tag and tag -> tribe id', () => {
+    const w = world(
         '2101,Dux2311,44,8,87106,26\n5322,cel+micut,0,3,88,100',
         '2,Syntax+Sentinels,SNTX,6,1902,1,1,1\n44,Gone+Fishing,G-F,1,2,3,4,5'
     );
-    assert.equal(tribes['dux2311'], 'G-F');
-    assert.equal(tribes['cel micut'], '');       // tribe 0 means no tribe
+    assert.deepEqual(w.players['2101'], {name: 'Dux2311', tribe: 'G-F'});
+    assert.deepEqual(w.players['5322'], {name: 'cel micut', tribe: ''});   // tribe 0 = no tribe
+    assert.equal(w.tribes['sntx'], '2');
+    assert.equal(w.tribes['g-f'], '44');
 });
 
-const player = name => ({name, profileUrl: '/game.php?screen=info_player&id=' + name.length});
+let nextId = 100;
+const player = name => {
+    const id = String(nextId++);
+    return {id, name, profileUrl: '/game.php?screen=info_player&id=' + id};
+};
+
+// a row off the friends screen: same player, but the app hands over a whole
+// table of text where the nickname belongs - only the id can be trusted
+const row = (player, extra) => Object.assign({
+    id: player.id,
+    name: 'Name Rank Points Tribe ' + player.name,
+    profileUrl: player.profileUrl,
+    remove: {url: '/drop?' + player.id, method: 'GET'},
+    note: 'Friends'
+}, extra || {});
+
+const me = {id: '1', name: 'tilaven'};
 
 test('three lists: to invite, already there, outsiders', () => {
-    const rows = [
-        {name: 'Gnedler', remove: {url: '/drop?1', method: 'GET'}, note: 'Friends'},
-        {name: 'Randomek', remove: {url: '/drop?2', method: 'GET'}, note: 'Friends'}
-    ];
-    const lists = splitLists([player('Gnedler'), player('HomerJ'), player('tilaven')], rows, 'tilaven');
+    const gnedler = player('Gnedler');
+    const stranger = player('Randomek');
+    const lists = splitLists(
+        [gnedler, player('HomerJ'), {id: me.id, name: me.name}],
+        [row(gnedler), row(stranger)],
+        me
+    );
 
     assert.deepEqual(lists.toInvite.map(e => [e.name, e.kind]), [['HomerJ', 'invite']]);
-    assert.deepEqual(lists.already.map(e => e.name), ['Gnedler']);      // yourself is skipped
-    assert.deepEqual(lists.outsiders.map(e => [e.name, e.kind]), [['Randomek', 'remove']]);
+    assert.deepEqual(lists.already.map(e => e.id), [gnedler.id]);      // yourself is skipped
+    assert.deepEqual(lists.outsiders.map(e => [e.id, e.kind]), [[stranger.id, 'remove']]);
     assert.ok(lists.toInvite[0].profileUrl, 'invite rows keep the profile link');
+});
+
+test('players are matched by profile id, never by the text of a row', () => {
+    // the nickname on the row is unusable in the app, the id is not
+    const homer = player('HomerJ');
+    const lists = splitLists([homer], [row(homer)], me);
+    assert.equal(lists.toInvite.length, 0);
+    assert.equal(lists.outsiders.length, 0);
+    assert.deepEqual(lists.already.map(e => e.id), [homer.id]);
 });
 
 test('a suggested player is not on the list yet, so he stays up for invite', () => {
     // suggestions are dropped while parsing (they only carry an add_buddy link),
     // so splitLists never sees them
-    const lists = splitLists([player('Gnedler')], [], 'me');
-    assert.deepEqual(lists.toInvite.map(e => [e.name, e.kind]), [['Gnedler', 'invite']]);
+    const lists = splitLists([player('Gnedler')], [], me);
+    assert.deepEqual(lists.toInvite.map(e => e.kind), ['invite']);
     assert.equal(lists.already.length, 0);
 });
 
 test('somebody who invited us lands on the first list, to accept', () => {
     // in a tribe we are looking for, and still on the first list - not the second
-    const rows = [{
-        name: 'Rosario',
+    const rosario = player('Rosario');
+    const request = row(rosario, {
         accept: {url: '/accept?1', method: 'GET'},
         remove: {url: '/decline?1', method: 'GET'},
         note: 'Requests'
-    }];
+    });
 
-    const wanted = splitLists([player('Rosario')], rows, 'me');
-    assert.deepEqual(wanted.toInvite.map(e => [e.name, e.kind]), [['Rosario', 'accept']]);
+    const wanted = splitLists([rosario], [request], me);
+    assert.deepEqual(wanted.toInvite.map(e => [e.id, e.kind]), [[rosario.id, 'accept']]);
     assert.equal(wanted.already.length, 0);
     assert.equal(wanted.outsiders.length, 0);
 
     // a request from somebody we are not looking for is not worth accepting -
     // it goes down to the outsiders, where removing it declines the request
-    const stranger = splitLists([], rows, 'me');
-    assert.equal(stranger.toInvite.length, 0);
-    assert.deepEqual(stranger.outsiders.map(e => [e.name, e.kind]), [['Rosario', 'remove']]);
+    const unwanted = splitLists([], [request], me);
+    assert.equal(unwanted.toInvite.length, 0);
+    assert.deepEqual(unwanted.outsiders.map(e => [e.id, e.kind]), [[rosario.id, 'remove']]);
 });
 
-test('matching ignores case and encoding differences', () => {
-    const lists = splitLists([player('cel+micut')], [{name: 'Cel Micut', remove: {url: '/x', method: 'GET'}}], 'me');
-    assert.equal(lists.toInvite.length, 0);
-    assert.equal(lists.outsiders.length, 0);
-    assert.equal(lists.already.length, 1);
+test('your own account never lands on any list', () => {
+    const lists = splitLists([{id: me.id, name: me.name}], [], me);
+    assert.equal(lists.toInvite.length + lists.already.length + lists.outsiders.length, 0);
 });
