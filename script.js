@@ -1,5 +1,5 @@
 // author: tilaven
-// version: 0.2.2
+// version: 0.2.3
 //
 // Invite Assistant - compares a target list of players (your tribe, other
 // tribes, or a list posted on the tribe forum) with your friends screen and
@@ -18,7 +18,7 @@
 (function () {
     'use strict';
 
-    var VERSION = '0.2.2';
+    var VERSION = '0.2.3';
     var PANEL_ID = 'invite-assistant';
     var REQUEST_DELAY_MS = 350;     // the game's bot protection dislikes bursts
 
@@ -970,6 +970,9 @@
         load: function (source) {
             UI.source.value = source;
             UI.setStatus(t('loading'));
+            if (nameKey(source) === 'debug') {
+                return App.debug();
+            }
             return Targets.resolve(parseSource(source))
                 .then(function (targets) {
                     App.targets = targets;
@@ -977,6 +980,41 @@
                 })
                 .catch(function (error) {
                     UI.setStatus(t('failed', {error: error.message || error}));
+                });
+        },
+
+        // what the friends screen handed over, verbatim - the one way to see
+        // why a layout we cannot try out here reads the way it does
+        debug: function () {
+            return Promise.all([Game.document(Game.url('buddies')), World.load()])
+                .then(function (both) {
+                    var doc = both[0];
+                    var world = both[1];
+                    var found = Parse.scan(doc);
+                    var report = ['links: ' + found.players + ', rows: ' + found.rows.length +
+                        ', unreadable: ' + found.unreadable +
+                        ', world: ' + Object.keys(world.players).length];
+
+                    found.rows.slice(0, 3).forEach(function (row, index) {
+                        report.push('row ' + (index + 1) + ' id=' + row.id +
+                            ' known=' + (world.players[row.id] ? 'yes' : 'no') +
+                            ' text="' + row.name.slice(0, 90) + '"');
+                    });
+                    Array.prototype.slice.call(
+                        Parse.content(doc).querySelectorAll(PROFILE_LINK), 0, 2
+                    ).forEach(function (link, index) {
+                        report.push('link ' + (index + 1) + ' href=' +
+                            (link.getAttribute('href') || '').slice(-40) +
+                            ' in ' + link.parentElement.tagName + '.' +
+                            (link.parentElement.className || '-'));
+                    });
+
+                    UI.setStatus('debug');
+                    UI.lists.textContent = '';
+                    UI.lists.appendChild(el('pre', {
+                        text: report.join('\n'),
+                        style: 'white-space:pre-wrap;font-size:11px;padding:8px'
+                    }));
                 });
         },
 
@@ -1017,11 +1055,11 @@
                         item.setName(known.name);
                         return;
                     }
-                    // too new for the daily files: the screen text is worth
-                    // showing only when it reads like a nickname and not like a
-                    // row of a table, which is what the app hands over
+                    // too new for the daily files. Whatever sits next to the
+                    // link is no nickname - in the app it is a run of table
+                    // headers - so the id is the honest thing to show
                     unnamed++;
-                    item.setName(item.name.length > 30 ? '#' + item.id : item.name);
+                    item.setName('#' + item.id);
                 });
                 if (unnamed) {
                     UI.addNote(t('unnamed', {
