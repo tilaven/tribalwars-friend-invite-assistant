@@ -1,5 +1,5 @@
 // author: tilaven
-// version: 0.2.4
+// version: 0.2.5
 //
 // Invite Assistant - compares a target list of players (your tribe, other
 // tribes, or a list posted on the tribe forum) with your friends screen and
@@ -18,7 +18,7 @@
 (function () {
     'use strict';
 
-    var VERSION = '0.2.4';
+    var VERSION = '0.2.5';
     var PANEL_ID = 'invite-assistant';
     var REQUEST_DELAY_MS = 350;     // the game's bot protection dislikes bursts
 
@@ -382,6 +382,11 @@
                 var row = Parse.rowOf(profile);
                 var actions = row ? Parse.actions(row) : {};
                 if (seen[id]) {
+                    // several links can point at the same player: an icon with
+                    // no text and the one carrying the nickname - text wins
+                    if (!seen[id].name) {
+                        seen[id].name = normalizeName(profile.textContent);
+                    }
                     return;
                 }
                 if (!row || !(actions.accept || actions.drop)) {
@@ -390,13 +395,10 @@
                     found.unreadable += actions.add ? 0 : 1;
                     return;
                 }
-                seen[id] = true;
-
-                // both are only stand-ins until the world files answer: the app
-                // wraps whole rows in the profile link, so the text can be the
-                // entire table instead of a nickname
+                // both name and tribe are stand-ins until the world files
+                // answer - the screens spell them differently per layout
                 var tribe = row.querySelector('a[href*="screen=info_ally"]');
-                found.rows.push({
+                seen[id] = found.rows[found.rows.length] = {
                     id: id,
                     name: normalizeName(profile.textContent),
                     profileUrl: href,
@@ -404,7 +406,7 @@
                     remove: actions.drop,
                     tribe: tribe ? normalizeName(tribe.textContent) : '',
                     note: Parse.sectionOf(row)
-                });
+                };
             });
 
             // a screen we failed to read looks exactly like an empty friends
@@ -434,7 +436,10 @@
             for (var node = row; node; node = node.parentElement) {
                 for (var prev = node.previousElementSibling; prev; prev = prev.previousElementSibling) {
                     if (/^H[1-4]$/.test(prev.tagName)) {
-                        return prev.textContent.trim();
+                        var title = prev.textContent.trim();
+                        // "Name Rank Global rank Online status Villages ..." is
+                        // the app printing its column names, not a section
+                        return title.length <= 30 ? title : '';
                     }
                 }
             }
