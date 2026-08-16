@@ -1,5 +1,5 @@
 // author: tilaven
-// version: 0.2.3
+// version: 0.2.4
 //
 // Invite Assistant - compares a target list of players (your tribe, other
 // tribes, or a list posted on the tribe forum) with your friends screen and
@@ -18,7 +18,7 @@
 (function () {
     'use strict';
 
-    var VERSION = '0.2.3';
+    var VERSION = '0.2.4';
     var PANEL_ID = 'invite-assistant';
     var REQUEST_DELAY_MS = 350;     // the game's bot protection dislikes bursts
 
@@ -991,11 +991,16 @@
                     var doc = both[0];
                     var world = both[1];
                     var found = Parse.scan(doc);
+                    var unknown = found.rows.filter(function (row) {
+                        return !world.players[row.id];
+                    });
                     var report = ['links: ' + found.players + ', rows: ' + found.rows.length +
                         ', unreadable: ' + found.unreadable +
-                        ', world: ' + Object.keys(world.players).length];
+                        ', world: ' + Object.keys(world.players).length +
+                        ', unknown: ' + unknown.length];
 
-                    found.rows.slice(0, 3).forEach(function (row, index) {
+                    // the rows the files cannot name are the interesting ones
+                    unknown.concat(found.rows).slice(0, 4).forEach(function (row, index) {
                         report.push('row ' + (index + 1) + ' id=' + row.id +
                             ' known=' + (world.players[row.id] ? 'yes' : 'no') +
                             ' text="' + row.name.slice(0, 90) + '"');
