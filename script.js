@@ -1,5 +1,5 @@
 // author: tilaven
-// version: 0.2.0
+// version: 0.2.1
 //
 // Invite Assistant - compares a target list of players (your tribe, other
 // tribes, or a list posted on the tribe forum) with your friends screen and
@@ -18,7 +18,7 @@
 (function () {
     'use strict';
 
-    var VERSION = '0.2.0';
+    var VERSION = '0.2.1';
     var PANEL_ID = 'invite-assistant';
     var REQUEST_DELAY_MS = 350;     // the game's bot protection dislikes bursts
 
@@ -50,6 +50,8 @@
             sourceThread: 'forum thread {id}',
             noTargets: 'No target players found - check the source field.',
             unreadScreen: 'Could not read your friends screen - the lists below may be wrong.',
+            unnamed: '{count} not in the world files yet ({known} players loaded)',
+            noWorldFiles: 'the world data files did not answer, so nicknames and tribes are missing',
             botProtection: 'Bot protection kicked in. Solve the captcha in the game, then run the script again.',
             failed: 'Failed: {error}'
         },
@@ -78,6 +80,8 @@
             sourceThread: 'wątku na forum {id}',
             noTargets: 'Nie znaleziono graczy - sprawdź pole ze źródłem.',
             unreadScreen: 'Nie udało się odczytać listy znajomych - poniższe listy mogą być błędne.',
+            unnamed: '{count} spoza plików świata ({known} graczy wczytanych)',
+            noWorldFiles: 'pliki świata nie odpowiedziały, więc brakuje nicków i plemion',
             botProtection: 'Włączyła się ochrona przed botami. Rozwiąż captchę w grze i odpal skrypt ponownie.',
             failed: 'Błąd: {error}'
         }
@@ -305,6 +309,7 @@
                 if (cells.length > 2) {
                     world.players[cells[0]] = {
                         name: normalizeName(cells[1]),
+                        tribeId: cells[2],
                         tribe: tagOf[cells[2]] || ''
                     };
                 }
@@ -550,14 +555,24 @@
             });
         },
 
+        // the member list comes out of the world files rather than out of the
+        // tribe screen: one file already in hand instead of a page per tribe,
+        // and names that no screen layout can mangle
         fromTribeIds: function (ids) {
-            var pages = ids.map(function (id) {
-                return Game.document(Game.url('info_ally', {id: id})).then(function (doc) {
-                    return Parse.players(Parse.content(doc));
-                });
-            });
-            return Promise.all(pages).then(function (lists) {
-                return uniqueById([].concat.apply([], lists));
+            return World.load().then(function (world) {
+                var wanted = {};
+                ids.forEach(function (id) { wanted[String(id)] = true; });
+
+                return Object.keys(world.players)
+                    .filter(function (id) { return wanted[world.players[id].tribeId]; })
+                    .map(function (id) {
+                        return {
+                            id: id,
+                            name: world.players[id].name,
+                            tribe: world.players[id].tribe,
+                            profileUrl: Game.url('info_player', {id: id})
+                        };
+                    });
             });
         }
     };
@@ -823,10 +838,16 @@
         // the status line doubles as a link to whatever it is reporting on, so
         // the thread or tribe behind the list is one click away
         setStatus: function (text, url) {
+            UI.statusText = text;
+            UI.statusUrl = url || null;
             UI.status.textContent = '';
             UI.status.appendChild(url
                 ? el('a', {text: text, href: url, target: '_blank'})
                 : document.createTextNode(text));
+        },
+
+        addNote: function (note) {
+            UI.status.appendChild(el('span', {class: 'ia-note', text: ' - ' + note}));
         },
 
         // every button is disabled while a queue runs - that is the whole
@@ -982,15 +1003,28 @@
                 return Promise.resolve();
             }
             return World.load().then(function (world) {
+                var unnamed = 0;
                 entries.forEach(function (item) {
                     var known = world.players[item.id];
                     if (known) {
                         item.setTribe(known.tribe);
                         item.setName(known.name);
+                        return;
                     }
+                    // too new for the daily files: the screen text is worth
+                    // showing only when it reads like a nickname and not like a
+                    // row of a table, which is what the app hands over
+                    unnamed++;
+                    item.setName(item.name.length > 30 ? '#' + item.id : item.name);
                 });
+                if (unnamed) {
+                    UI.addNote(t('unnamed', {
+                        count: unnamed,
+                        known: Object.keys(world.players).length
+                    }));
+                }
             }).catch(function () {
-                // no world data files on this server - keep what the screen said
+                UI.addNote(t('noWorldFiles'));
             });
         }
     };

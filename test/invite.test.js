@@ -46,8 +46,8 @@ test('the world files answer nickname, tribe tag and tag -> tribe id', () => {
         '2101,Dux2311,44,8,87106,26\n5322,cel+micut,0,3,88,100',
         '2,Syntax+Sentinels,SNTX,6,1902,1,1,1\n44,Gone+Fishing,G-F,1,2,3,4,5'
     );
-    assert.deepEqual(w.players['2101'], {name: 'Dux2311', tribe: 'G-F'});
-    assert.deepEqual(w.players['5322'], {name: 'cel micut', tribe: ''});   // tribe 0 = no tribe
+    assert.deepEqual(w.players['2101'], {name: 'Dux2311', tribeId: '44', tribe: 'G-F'});
+    assert.deepEqual(w.players['5322'], {name: 'cel micut', tribeId: '0', tribe: ''});   // tribe 0 = no tribe
     assert.equal(w.tribes['sntx'], '2');
     assert.equal(w.tribes['g-f'], '44');
 });
