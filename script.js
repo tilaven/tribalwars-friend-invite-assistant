@@ -1,5 +1,5 @@
 // author: tilaven
-// version: 0.2.1
+// version: 0.2.2
 //
 // Invite Assistant - compares a target list of players (your tribe, other
 // tribes, or a list posted on the tribe forum) with your friends screen and
@@ -18,7 +18,7 @@
 (function () {
     'use strict';
 
-    var VERSION = '0.2.1';
+    var VERSION = '0.2.2';
     var PANEL_ID = 'invite-assistant';
     var REQUEST_DELAY_MS = 350;     // the game's bot protection dislikes bursts
 
@@ -450,6 +450,7 @@
     // collecting them
     var World = {
         KEY: 'invite-assistant-world',
+        FORMAT: 2,                      // bump whenever the stored shape changes
         MAX_AGE_MS: 60 * 60 * 1000,
         pending: null,
 
@@ -460,10 +461,14 @@
             return World.pending;
         },
 
+        // a cache left by an older version holds a shape this one no longer
+        // understands and plans against it in silence, so the format counts
+        // just as much as the age
         stored: function () {
             try {
                 var saved = JSON.parse(localStorage.getItem(World.KEY));
-                if (saved && Date.now() - saved.time < World.MAX_AGE_MS) {
+                if (saved && saved.format === World.FORMAT &&
+                    Date.now() - saved.time < World.MAX_AGE_MS) {
                     return Promise.resolve(saved.world);
                 }
             } catch (e) {
@@ -477,8 +482,9 @@
                 .then(function (files) {
                     var world = Parse.world(files[0], files[1]);
                     try {
-                        localStorage.setItem(World.KEY,
-                            JSON.stringify({time: Date.now(), world: world}));
+                        localStorage.setItem(World.KEY, JSON.stringify({
+                            format: World.FORMAT, time: Date.now(), world: world
+                        }));
                     } catch (e) {
                         // no room for a whole world in storage, keep it for this run
                     }
