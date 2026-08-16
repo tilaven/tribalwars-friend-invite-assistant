@@ -1,0 +1,7 @@
+{
+  "name": "tribalwars-invite-assistant",
+  "private": true,
+  "scripts": {
+    "test": "node --test"
+  }
+}
